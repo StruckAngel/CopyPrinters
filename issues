@@ -1,0 +1,46 @@
+PS Microsoft.PowerShell.Core\FileSystem::\\as12\TechShares\Tech Shares\MISJAP\Tools> .\PrinterCopyTool.ps1
+At \\as12\TechShares\Tech Shares\MISJAP\Tools\PrinterCopyTool.ps1:89 char:18
++         foreach ([string]$currentLine in $tracertLines) {
++                  ~
+Missing variable name after foreach.
+At \\as12\TechShares\Tech Shares\MISJAP\Tools\PrinterCopyTool.ps1:89 char:39
++         foreach ([string]$currentLine in $tracertLines) {
++                                       ~~
+Unexpected token 'in' in expression or statement.
+At \\as12\TechShares\Tech Shares\MISJAP\Tools\PrinterCopyTool.ps1:77 char:9
++     try {
++         ~
+Missing closing '}' in statement block or type definition.
+At \\as12\TechShares\Tech Shares\MISJAP\Tools\PrinterCopyTool.ps1:89 char:55
++         foreach ([string]$currentLine in $tracertLines) {
++                                                       ~
+The Try statement is missing its Catch or Finally block.
+At \\as12\TechShares\Tech Shares\MISJAP\Tools\PrinterCopyTool.ps1:63 char:37
++ function Test-TracerouteDestination {
++                                     ~
+Missing closing '}' in statement block or type definition.
+At \\as12\TechShares\Tech Shares\MISJAP\Tools\PrinterCopyTool.ps1:89 char:55
++         foreach ([string]$currentLine in $tracertLines) {
++                                                       ~
+Unexpected token ')' in expression or statement.
+At \\as12\TechShares\Tech Shares\MISJAP\Tools\PrinterCopyTool.ps1:128 char:5
++     }
++     ~
+Unexpected token '}' in expression or statement.
+At \\as12\TechShares\Tech Shares\MISJAP\Tools\PrinterCopyTool.ps1:134 char:1
++ }
++ ~
+Unexpected token '}' in expression or statement.
+At \\as12\TechShares\Tech Shares\MISJAP\Tools\PrinterCopyTool.ps1:176 char:22
++             foreach ([System.IO.FileInfo]$currentFile in $textFiles)  ...
++                      ~
+Missing variable name after foreach.
+At \\as12\TechShares\Tech Shares\MISJAP\Tools\PrinterCopyTool.ps1:176 char:55
++             foreach ([System.IO.FileInfo]$currentFile in $textFiles)  ...
++                                                       ~~
+Unexpected token 'in' in expression or statement.
+Not all parse errors were reported.  Correct the reported errors and try again.
+    + CategoryInfo          : ParserError: (:) [], ParseException
+    + FullyQualifiedErrorId : MissingVariableNameAfterForeach
+
+PS Microsoft.PowerShell.Core\FileSystem::\\as12\TechShares\Tech Shares\MISJAP\Tools>
