@@ -240,16 +240,17 @@ function Process-PrinterFile {
             # Skip empty lines and comment lines
             if ([string]::IsNullOrWhiteSpace($cleanedLine) -or 
                 $cleanedLine.StartsWith("REM") -or 
+                $cleanedLine.StartsWith("#") -or
                 $cleanedLine.StartsWith("===") -or 
                 $cleanedLine.StartsWith("NOTE:")) {
                 continue  # Skip to next line
             }
             
             # Look for printer installation commands using regex pattern
-            # Pattern matches: /i or /id followed by space and \\server\printer path
-            if ($cleanedLine -match "^(/id?)\s+(\\\\[^\\]+\\[^\s]+)") {
-                # Process the found printer command
-                Process-PrinterCommand -Line $currentLine -TrimmedLine $cleanedLine -LineNumber $currentLineNumber -File $File -BasePath $BasePath -AllResults $AllResults -UniquePrinters $UniquePrinters -Indent $Indent -Matches $matches
+            # Pattern matches: /i or /id followed by space and \\server\printer path (case insensitive)
+            if ($cleanedLine -imatch "^(/id?)\s+(\\\\[^\\]+\\[^\s]+)") {
+                # Process the found printer command (using automatic $matches variable)
+                Process-PrinterCommand -Line $currentLine -TrimmedLine $cleanedLine -LineNumber $currentLineNumber -File $File -BasePath $BasePath -AllResults $AllResults -UniquePrinters $UniquePrinters -Indent $Indent
             }
         }
     }
@@ -283,61 +284,66 @@ function Process-PrinterCommand {
         [Parameter(Mandatory)]
         [ref]$UniquePrinters,             # Reference to hashtable preventing duplicates
         [Parameter(Mandatory)]
-        [string]$Indent,                  # Display indentation string
-        [Parameter(Mandatory)]
-        [System.Text.RegularExpressions.GroupCollection]$Matches  # Regex match results
+        [string]$Indent                   # Display indentation string
     )
     
-    # Extract command type (/i or /id) and printer path from regex matches
-    $commandType = $Matches[1]      # Either "/i" or "/id"
-    $printerPath = $Matches[2]      # Full UNC path like \\server\printer
-    
-    # Parse server and printer names from the UNC path
-    $serverName = ""
-    $printerName = ""
-    
-    # Use regex to split \\server\printer into parts
-    if ($printerPath -match "\\\\([^\\]+)\\(.+)") {
-        $serverName = $Matches[1]       # Server name (after \\)
-        $printerName = $Matches[2]      # Printer name (after server\)
-    }
-    
-    # Check if this printer path has already been found (prevent duplicates)
-    if (-not $UniquePrinters.Value.ContainsKey($printerPath)) {
-        # Create new printer result object
-        $printerResult = [PSCustomObject]@{
-            File = $File.FullName
-            RelativePath = $File.FullName.Replace($BasePath, "")
-            LineNumber = $LineNumber
-            OriginalLine = $Line
-            CleanCommand = $TrimmedLine
-            PrinterPath = $printerPath
-            PrintServer = $serverName
-            PrinterName = $printerName
-            CommandType = if ($commandType -eq "/id") { "Install and Set Default" } else { "Install Only" }
-            IsCommented = $false
+    # Re-run the regex match to populate $matches variable (case insensitive)
+    if ($TrimmedLine -imatch "^(/id?)\s+(\\\\[^\\]+\\[^\s]+)") {
+        # Extract command type (/i or /id) and printer path from regex matches
+        $commandType = $matches[1]      # Either "/i" or "/id"
+        $printerPath = $matches[2]      # Full UNC path like \\server\printer
+        
+        # Parse server and printer names from the UNC path
+        $serverName = ""
+        $printerName = ""
+        
+        # Use regex to split \\server\printer into parts
+        if ($printerPath -match "\\\\([^\\]+)\\(.+)") {
+            $serverName = $matches[1]       # Server name (after \\)
+            $printerName = $matches[2]      # Printer name (after server\)
         }
         
-        # Add to both collections
-        $AllResults.Value += $printerResult
-        $UniquePrinters.Value[$printerPath] = $printerResult
-        
-        # Display the found printer information
-        Write-Host "$Indent     FOUND: Line $LineNumber" -ForegroundColor Green
-        Write-Host "$Indent       Printer Path: $printerPath" -ForegroundColor White
-        Write-Host "$Indent       Server: $serverName" -ForegroundColor White
-        Write-Host "$Indent       Printer: $printerName" -ForegroundColor White
-        Write-Host "$Indent       Type: $($printerResult.CommandType)" -ForegroundColor White
-        Write-Host "$Indent       Command: $TrimmedLine" -ForegroundColor Gray
-    }
-    else {
-        # Handle duplicate printer - update if this one sets as default
-        if ($commandType -eq "/id" -and $UniquePrinters.Value[$printerPath].CommandType -eq "Install Only") {
-            $UniquePrinters.Value[$printerPath].CommandType = "Install and Set Default"
-            Write-Host "$Indent     DUPLICATE (Updated to Default): $printerPath" -ForegroundColor Yellow
+        # Check if this printer path has already been found (prevent duplicates)
+        if (-not $UniquePrinters.Value.ContainsKey($printerPath)) {
+            # Create new printer result object
+            $printerResult = [PSCustomObject]@{
+                File = $File.FullName
+                RelativePath = $File.FullName.Replace($BasePath, "")
+                LineNumber = $LineNumber
+                OriginalLine = $Line
+                CleanCommand = $TrimmedLine
+                PrinterPath = $printerPath
+                PrintServer = $serverName
+                PrinterName = $printerName
+                CommandType = if ($commandType -eq "/id") { "Install and Set Default" } else { "Install Only" }
+                IsCommented = $false
+                DuplicateCount = 1
+            }
+            
+            # Add to both collections
+            $AllResults.Value += $printerResult
+            $UniquePrinters.Value[$printerPath] = $printerResult
+            
+            # Display the found printer information
+            Write-Host "$Indent     FOUND: Line $LineNumber" -ForegroundColor Green
+            Write-Host "$Indent       Printer Path: $printerPath" -ForegroundColor White
+            Write-Host "$Indent       Server: $serverName" -ForegroundColor White
+            Write-Host "$Indent       Printer: $printerName" -ForegroundColor White
+            Write-Host "$Indent       Type: $($printerResult.CommandType)" -ForegroundColor White
+            Write-Host "$Indent       Command: $TrimmedLine" -ForegroundColor Gray
         }
         else {
-            Write-Host "$Indent     DUPLICATE (Skipped): $printerPath" -ForegroundColor DarkYellow
+            # Handle duplicate printer - increment duplicate count
+            $UniquePrinters.Value[$printerPath].DuplicateCount++
+            
+            # Update if this one sets as default
+            if ($commandType.ToLower() -eq "/id" -and $UniquePrinters.Value[$printerPath].CommandType -eq "Install Only") {
+                $UniquePrinters.Value[$printerPath].CommandType = "Install and Set Default"
+                Write-Host "$Indent     DUPLICATE ! (Updated to Default): $printerPath" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "$Indent     DUPLICATE ! (Count: $($UniquePrinters.Value[$printerPath].DuplicateCount)): $printerPath" -ForegroundColor DarkYellow
+            }
         }
     }
 }
@@ -381,6 +387,12 @@ function Search-PrinterInstallCommands {
     Write-Host "Total printer commands found: $($allFoundResults.Value.Count)" -ForegroundColor White
     Write-Host "Unique printers found: $($finalResults.Count)" -ForegroundColor White
     
+    # Count duplicates
+    $duplicateCount = ($finalResults | Where-Object { $_.DuplicateCount -gt 1 }).Count
+    if ($duplicateCount -gt 0) {
+        Write-Host "Printers with duplicates: $duplicateCount (marked with !)" -ForegroundColor Yellow
+    }
+    
     # Display all unique printer commands found
     if ($finalResults.Count -gt 0) {
         Write-Host "`nUNIQUE PRINTER INSTALLATION COMMANDS:" -ForegroundColor Yellow
@@ -388,7 +400,11 @@ function Search-PrinterInstallCommands {
         foreach ($printerItem in $finalResults) {
             # Determine the correct command prefix
             $commandPrefix = if ($printerItem.CommandType -eq "Install and Set Default") { "/id" } else { "/i" }
-            Write-Host "  $commandPrefix $($printerItem.PrinterPath)" -ForegroundColor Green
+            
+            # Show duplicate indicator if more than one instance found
+            $duplicateIndicator = if ($printerItem.DuplicateCount -gt 1) { " !" } else { "" }
+            
+            Write-Host "  $commandPrefix $($printerItem.PrinterPath)$duplicateIndicator" -ForegroundColor Green
         }
     }
     else {
@@ -496,7 +512,8 @@ function Create-PrinterConfigFile {
         Write-Host "`nPrinter commands added to _SPPrinters.txt:" -ForegroundColor Yellow
         foreach ($result in $SearchResults) {
             $command = if ($result.CommandType -eq "Install and Set Default") { "/id" } else { "/i" }
-            Write-Host "  $command $($result.PrinterPath)" -ForegroundColor White
+            $duplicateIndicator = if ($result.DuplicateCount -gt 1) { " !" } else { "" }
+            Write-Host "  $command $($result.PrinterPath)$duplicateIndicator" -ForegroundColor White
         }
         
         Write-Host "`nMigration completed successfully!" -ForegroundColor Green
