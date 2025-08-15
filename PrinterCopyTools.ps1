@@ -1,271 +1,461 @@
 #
+# Enhanced Printer Migration Script v1.2
+# 
+# This script searches for printer installation commands from the Install_Renown_Printers.ps1
+# and migrates them to a second PC.
 #
-#
-# 1.1
-# This script runs a modified printer search from the Install_Renown_Printers.ps1.
-# Issues to watch out for while using this script:
-# I removed DUPLICATE printers, but they may still show up when pulling printers from the old PC.
-# Dated or offline printers: double-check if the printer script was able to add them or if you can connect to them using File Explorer.
-# This just copies the printers from one PC to another, so if there's a misconfiguration on the original PC, expect it on the new PC too.
-# Make sure to clear any unnecessary printers to reduce issues with EPIC.
-# Read the information the scripts provides for troubleshooting please.
-#
-#
+# IMPORTANT NOTES:
+# - Duplicate printers are filtered out, but may still appear from old PC configurations
+# - Check for dated or offline printers - verify connectivity via File Explorer if needed  
+# - Script copies printer configurations as-is, including any misconfigurations
+# - Clear unnecessary printers to reduce EPIC compatibility issues
+# - Review script output for troubleshooting information
 #
 
+#region Functions
 
-
-do {
-    # Prompt user for computer name input
-    $computerName = Read-Host -Prompt "Enter the computer name (press Enter to exit)"
+function Test-ComputerConnectivity {
+    <#
+    .SYNOPSIS
+    Tests computer connectivity using ping and traceroute validation
     
-    # Check if user wants to exit
-    if ([string]::IsNullOrWhiteSpace($computerName)) {
-        Write-Host "Exiting script..." -ForegroundColor Yellow
-        break
-    }
-
+    .DESCRIPTION
+    Tests if a computer is reachable via ping, then performs traceroute to verify
+    the final destination matches the target computer name
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$ComputerName           # Target computer name to test connectivity
+    )
+    
     Write-Host "`n=== Computer Status Check ===" -ForegroundColor Cyan
-    Write-Host "Computer Name: $computerName" -ForegroundColor White
-
-    # Perform ping test
+    Write-Host "Computer Name: $ComputerName" -ForegroundColor White
     Write-Host "Testing connectivity..." -ForegroundColor Yellow
-
-
-	# Need to change to to test route, I think there was a issue with that command before
-    $pingResult = ping -n 4 -w 1000 $computerName 2>&1 | Out-String
-    if ($pingResult -match "Reply from") {
+    
+    # Step 1: Basic connectivity test using Test-Connection
+    try {
+        [Microsoft.PowerShell.Commands.TestConnectionCommand+PingStatus[]]$pingResults = Test-Connection -ComputerName $ComputerName -Count 4 -ErrorAction Stop
+        
         Write-Host "Status: ONLINE" -ForegroundColor Green
-        # Extract packet statistics
-        if ($pingResult -match "Packets: Sent = (\d+), Received = (\d+)") {
-            Write-Host "Packets Sent: $($matches[1])" -ForegroundColor White
-            Write-Host "Packets Received: $($matches[2])" -ForegroundColor White
-        }
-        if ($pingResult -match "Average = (\d+)ms") {
-            Write-Host "Average Response Time: $($matches[1]) ms" -ForegroundColor White
-        }
-    } else {
+        Write-Host "Packets Sent: 4" -ForegroundColor White
+        Write-Host "Packets Received: $($pingResults.Count)" -ForegroundColor White
+        
+        # Calculate average response time
+        [double]$avgResponseTime = ($pingResults | Measure-Object -Property ResponseTime -Average).Average
+        Write-Host "Average Response Time: $([math]::Round($avgResponseTime, 2)) ms" -ForegroundColor White
+        
+        # Step 2: Perform traceroute validation
+        Write-Host "`nPerforming traceroute validation..." -ForegroundColor Yellow
+        Test-TracerouteDestination -ComputerName $ComputerName
+        
+        return $true
+    }
+    catch {
         Write-Host "Status: OFFLINE or UNREACHABLE" -ForegroundColor Red
-        Write-Host "`nSkipping to next computer...`n" -ForegroundColor Yellow
-        continue
+        Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
     }
+    finally {
+        Write-Host "Check completed at: $(Get-Date)" -ForegroundColor Gray
+    }
+}
 
-    Write-Host "Check completed at: $(Get-Date)" -ForegroundColor Gray
-
-    # Define the search path
-    $searchPath = "\\$computerName\c$\programdata\renown\printers\"
-
-    # Function to recursively search all folders
-    function Search-AllFolders {
-        param(
-            [string]$CurrentPath,
-            [string]$BasePath,
-            [ref]$AllResults,
-            [ref]$UniquePrinters,
-            [int]$Depth = 0
-        )
+function Test-TracerouteDestination {
+    <#
+    .SYNOPSIS
+    Performs traceroute and validates the final destination matches target computer
+    
+    .DESCRIPTION
+    Uses tracert command to trace route to target computer and compares the final
+    destination with the expected computer name
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$ComputerName           # Target computer name to validate route to
+    )
+    
+    try {
+        Write-Host "Running traceroute to $ComputerName..." -ForegroundColor Gray
         
-        $indent = "  " * $Depth
+        # Execute tracert command and capture output
+        [string]$tracertOutput = & tracert -h 10 -w 2000 $ComputerName 2>&1 | Out-String
         
-        try {
-            Write-Host "$indent Searching: $CurrentPath" -ForegroundColor Gray
-            
-            # Get all items in current directory
-            $items = Get-ChildItem -Path $CurrentPath -ErrorAction SilentlyContinue
-            
-            # Process .txt files in current directory
-            $txtFiles = $items | Where-Object { $_.Extension -eq ".txt" -and -not $_.PSIsContainer }
-            
-            if ($txtFiles.Count -gt 0) {
-                Write-Host "$indent   Found $($txtFiles.Count) .txt files" -ForegroundColor Green
-                
-                foreach ($file in $txtFiles) {
-                    Write-Host "$indent   Processing: $($file.Name)" -ForegroundColor Yellow
-                    
-                    try {
-                        $content = Get-Content -Path $file.FullName -ErrorAction Stop
-                        $lineNumber = 0
-                        
-                        foreach ($line in $content) {
-                            $lineNumber++
-                            $trimmedLine = $line.Trim()
-                            
-                            # Skip empty lines and comment lines that start with REM
-                            if ($trimmedLine -eq "" -or $trimmedLine.StartsWith("REM") -or $trimmedLine.StartsWith("===") -or $trimmedLine.StartsWith("NOTE:")) {
-                                continue
-                            }
-                            
-                            # Check for /i or /id commands (the actual install commands)
-                            if ($trimmedLine -match "^(/id?)\s+(\\\\[^\\]+\\[^\s]+)") {
-                                $command = $matches[1]
-                                $printerPath = $matches[2]
-                                
-                                # Extract server and printer name from the path
-                                $serverName = ""
-                                $printerName = ""
-                                if ($printerPath -match "\\\\([^\\]+)\\(.+)") {
-                                    $serverName = $matches[1]
-                                    $printerName = $matches[2]
-                                }
-                                
-                                # Check if this printer has already been found
-                                if (-not $UniquePrinters.Value.ContainsKey($printerPath)) {
-                                    $result = [PSCustomObject]@{
-                                        File = $file.FullName
-                                        RelativePath = $file.FullName.Replace($BasePath, "")
-                                        LineNumber = $lineNumber
-                                        OriginalLine = $line
-                                        CleanCommand = $trimmedLine
-                                        PrinterPath = $printerPath
-                                        PrintServer = $serverName
-                                        PrinterName = $printerName
-                                        CommandType = if ($command -eq "/id") { "Install and Set Default" } else { "Install Only" }
-                                        IsCommented = $false
-                                    }
-                                    
-                                    $AllResults.Value += $result
-                                    $UniquePrinters.Value[$printerPath] = $result
-                                    
-                                    # Display immediate results
-                                    Write-Host "$indent     FOUND: Line $lineNumber" -ForegroundColor Green
-                                    Write-Host "$indent       Printer Path: $printerPath" -ForegroundColor White
-                                    Write-Host "$indent       Server: $serverName" -ForegroundColor White
-                                    Write-Host "$indent       Printer: $printerName" -ForegroundColor White
-                                    Write-Host "$indent       Type: $($result.CommandType)" -ForegroundColor White
-                                    Write-Host "$indent       Command: $trimmedLine" -ForegroundColor Gray
-                                } else {
-                                    # Update if this is a default command and previous wasn't
-                                    if ($command -eq "/id" -and $UniquePrinters.Value[$printerPath].CommandType -eq "Install Only") {
-                                        $UniquePrinters.Value[$printerPath].CommandType = "Install and Set Default"
-                                        Write-Host "$indent     DUPLICATE (Updated to Default): $printerPath" -ForegroundColor Yellow
-                                    } else {
-                                        Write-Host "$indent     DUPLICATE (Skipped): $printerPath" -ForegroundColor DarkYellow
-                                    }
-                                }
-                            }
-                        }
-                    } catch {
-                        Write-Host "$indent     ERROR reading file: $($_.Exception.Message)" -ForegroundColor Red
-                    }
+        # Parse traceroute output to find final destination
+        [string[]]$tracertLines = $tracertOutput -split "`n" | Where-Object { $_.Trim() -ne "" }
+        [string]$finalDestination = ""
+        [bool]$routeFound = $false
+        
+        # Look through tracert output for the final successful hop
+        foreach ([string]$currentLine in $tracertLines) {
+            # Skip header lines and error messages
+            if ($currentLine -match "^\s*\d+" -and $currentLine -notmatch "\*\s*\*\s*\*") {
+                # Extract the destination from lines with successful hops
+                # Pattern matches: "  1    <1 ms    <1 ms    <1 ms  destination-name [ip-address]"
+                if ($currentLine -match "\s+([^\[\s]+)(?:\s+\[[^\]]+\])?\s*$") {
+                    $finalDestination = $matches[1].Trim()
+                    $routeFound = $true
                 }
-            } else {
-                Write-Host "$indent   No .txt files found" -ForegroundColor DarkGray
-            }
-            
-            # Get all subdirectories and recursively search them
-            $subDirs = $items | Where-Object { $_.PSIsContainer }
-            
-            if ($subDirs.Count -gt 0) {
-                Write-Host "$indent   Found $($subDirs.Count) subdirectories" -ForegroundColor Cyan
-                
-                foreach ($subDir in $subDirs) {
-                    Write-Host "$indent   Entering directory: $($subDir.Name)" -ForegroundColor Cyan
-                    Search-AllFolders -CurrentPath $subDir.FullName -BasePath $BasePath -AllResults $AllResults -UniquePrinters $UniquePrinters -Depth ($Depth + 1)
+                # Also handle lines that just show IP addresses
+                elseif ($currentLine -match "\s+(\d+\.\d+\.\d+\.\d+)\s*$") {
+                    $finalDestination = $matches[1].Trim()
+                    $routeFound = $true
                 }
-            } else {
-                Write-Host "$indent   No subdirectories found" -ForegroundColor DarkGray
             }
+        }
+        
+        # Validate the final destination against expected computer name
+        if ($routeFound -and -not [string]::IsNullOrWhiteSpace($finalDestination)) {
+            Write-Host "Final destination: $finalDestination" -ForegroundColor White
             
-        } catch {
-            Write-Host "$indent ERROR accessing directory: $($_.Exception.Message)" -ForegroundColor Red
+            # Check if final destination matches target computer name (case-insensitive)
+            if ($finalDestination -eq $ComputerName -or $finalDestination -like "*$ComputerName*") {
+                Write-Host "Route validation: " -NoNewline -ForegroundColor White
+                Write-Host "✓ MATCH" -ForegroundColor Green
+                Write-Host "The traceroute destination matches the target computer." -ForegroundColor Green
+            }
+            else {
+                Write-Host "Route validation: " -NoNewline -ForegroundColor White  
+                Write-Host "⚠ WARNING" -ForegroundColor Yellow
+                Write-Host "The traceroute destination ($finalDestination) does not match target ($ComputerName)." -ForegroundColor Yellow
+                Write-Host "This might indicate DNS issues or network redirection." -ForegroundColor Yellow
+            }
+        }
+        else {
+            Write-Host "Route validation: " -NoNewline -ForegroundColor White
+            Write-Host "⚠ UNABLE TO DETERMINE" -ForegroundColor Yellow
+            Write-Host "Could not determine final destination from traceroute output." -ForegroundColor Yellow
         }
     }
-
-    # Main search function
-    function Search-PrinterInstallCommands {
-        param(
-            [string]$SearchPath
-        )
-        
-        $results = @()
-        $uniquePrinters = @{}
-        
-        Write-Host "`nStarting comprehensive folder-by-folder search..." -ForegroundColor Magenta
-        Write-Host "Base path: $SearchPath" -ForegroundColor Cyan
-        Write-Host "Looking for lines starting with '/i' or '/id' followed by printer paths..." -ForegroundColor Cyan
-        
-        # Test if path exists
-        if (-not (Test-Path $SearchPath)) {
-            Write-Host "ERROR: Path does not exist or is not accessible: $SearchPath" -ForegroundColor Red
-            return @()
-        }
-        
-        # Use reference variables to collect results from recursive function
-        $allResults = [ref]@()
-        $allUniquePrinters = [ref]@{}
-        
-        # Start recursive search
-        Search-AllFolders -CurrentPath $SearchPath -BasePath $SearchPath -AllResults $allResults -UniquePrinters $allUniquePrinters
-        
-        # Get unique results
-        $results = $allUniquePrinters.Value.Values | Sort-Object PrinterPath
-        
-        # Final Summary
-        Write-Host "`nCOMPREHENSIVE SEARCH SUMMARY" -ForegroundColor Magenta
-        Write-Host "Total printer installation commands found: $($allResults.Value.Count)" -ForegroundColor White
-        Write-Host "Unique printers found: $($results.Count)" -ForegroundColor White
-        
-        # Output all unique printer names found
-        if ($results.Count -gt 0) {
-            Write-Host "`nUNIQUE PRINTER INSTALLATION COMMANDS FOUND:" -ForegroundColor Yellow
-            foreach ($printer in $results) {
-                $command = if ($printer.CommandType -eq "Install and Set Default") { "/id" } else { "/i" }
-                Write-Host "  $command $($printer.PrinterPath)" -ForegroundColor Green
-            }
-        } else {
-            Write-Host "`nNo printer installation commands found." -ForegroundColor Yellow
-            Write-Host "Searched for lines starting with '/i' or '/id' followed by printer paths." -ForegroundColor Yellow
-        }
-        
-        return $results
+    catch {
+        Write-Host "Route validation: " -NoNewline -ForegroundColor White
+        Write-Host "⚠ ERROR" -ForegroundColor Red
+        Write-Host "Error during traceroute: $($_.Exception.Message)" -ForegroundColor Red
     }
+}
 
-    # Execute the search
-    $searchResults = Search-PrinterInstallCommands -SearchPath $searchPath
-
-    # Copy printers to second PC if results found
-    if ($searchResults.Count -gt 0) {
-        Write-Host "`n" + "=" * 80
-        Write-Host "PRINTER MIGRATION TO SECOND PC" -ForegroundColor Magenta
+function Search-PrinterFiles {
+    <#
+    .SYNOPSIS
+    Recursively searches directories for .txt files containing printer commands
+    
+    .DESCRIPTION
+    This function searches through folders and subfolders looking for .txt files
+    that contain printer installation commands (/i or /id)
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$CurrentPath,        # The current directory being searched
+        [Parameter(Mandatory)]
+        [string]$BasePath,           # The original starting directory path
+        [Parameter(Mandatory)]
+        [ref]$AllResults,            # Reference to array collecting all found printer commands
+        [Parameter(Mandatory)]
+        [ref]$UniquePrinters,        # Reference to hashtable preventing duplicate printers
+        [int]$Depth = 0              # Current folder depth for display indentation
+    )
+    
+    # Create indentation for nested folder display
+    [string]$indent = "  " * $Depth
+    
+    try {
+        Write-Host "$indent Searching: $CurrentPath" -ForegroundColor Gray
         
-        # Prompt for second PC name
-        $secondPCName = Read-Host -Prompt "`nEnter the second PC name to copy printers to (or press Enter to skip migration)"
+        # Get all items (files and folders) in current directory
+        [System.IO.FileSystemInfo[]]$allItems = Get-ChildItem -Path $CurrentPath -ErrorAction SilentlyContinue
         
-        if (-not [string]::IsNullOrWhiteSpace($secondPCName)) {
-            # Test connectivity to second PC
-            Write-Host "`nTesting connectivity to second PC: $secondPCName" -ForegroundColor Cyan
+        # Filter to only .txt files (not directories)
+        [System.IO.FileInfo[]]$textFiles = $allItems | Where-Object { 
+            $_.Extension -eq ".txt" -and -not $_.PSIsContainer 
+        }
+        
+        # Process any .txt files found
+        if ($textFiles.Count -gt 0) {
+            Write-Host "$indent   Found $($textFiles.Count) .txt files" -ForegroundColor Green
             
-            $secondPingResult = ping -n 2 -w 1000 $secondPCName 2>&1 | Out-String
-            if ($secondPingResult -match "Reply from") {
-                Write-Host "Second PC Status: ONLINE" -ForegroundColor Green
-                
-                # Define second PC printer path
-                $secondPCPath = "\\$secondPCName\c$\ProgramData\Renown\Printers\"
-                
-                # Test if path exists on second PC
-                Write-Host "Testing path access: $secondPCPath" -ForegroundColor Cyan
-                if (Test-Path $secondPCPath) {
-                    Write-Host "Path accessible: $secondPCPath" -ForegroundColor Green
-                    
-                    # Get all items in the second PC printers directory
-                    Write-Host "`nCleaning up second PC printers directory..." -ForegroundColor Yellow
-                    try {
-                        $itemsToDelete = Get-ChildItem -Path $secondPCPath -ErrorAction Stop | Where-Object { $_.Name -ne "Install_Renown_Printers.ps1" }
-                        
-                        foreach ($item in $itemsToDelete) {
-                            Write-Host "  Deleting: $($item.Name)" -ForegroundColor Gray
-                            Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                        }
-                        
-                        Write-Host "Cleanup completed successfully." -ForegroundColor Green
-                        
-                        # Create the _SPPrinters.txt file
-                        Write-Host "`nCreating _SPPrinters.txt file..." -ForegroundColor Cyan
-                        
-                        # Build the file content
-                        $fileContent = @"
+            # Process each .txt file for printer commands
+            foreach ([System.IO.FileInfo]$currentFile in $textFiles) {
+                Write-Host "$indent   Processing: $($currentFile.Name)" -ForegroundColor Yellow
+                Process-PrinterFile -File $currentFile -BasePath $BasePath -AllResults $AllResults -UniquePrinters $UniquePrinters -Indent $indent
+            }
+        }
+        else {
+            Write-Host "$indent   No .txt files found" -ForegroundColor DarkGray
+        }
+        
+        # Get all subdirectories for recursive search
+        [System.IO.DirectoryInfo[]]$subDirectories = $allItems | Where-Object { $_.PSIsContainer }
+        
+        # Recursively search subdirectories
+        if ($subDirectories.Count -gt 0) {
+            Write-Host "$indent   Found $($subDirectories.Count) subdirectories" -ForegroundColor Cyan
+            
+            # Search each subdirectory
+            foreach ([System.IO.DirectoryInfo]$currentSubDir in $subDirectories) {
+                Write-Host "$indent   Entering directory: $($currentSubDir.Name)" -ForegroundColor Cyan
+                # Recursive call with increased depth
+                Search-PrinterFiles -CurrentPath $currentSubDir.FullName -BasePath $BasePath -AllResults $AllResults -UniquePrinters $UniquePrinters -Depth ($Depth + 1)
+            }
+        }
+        else {
+            Write-Host "$indent   No subdirectories found" -ForegroundColor DarkGray
+        }
+    }
+    catch {
+        Write-Host "$indent ERROR accessing directory: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+function Process-PrinterFile {
+    <#
+    .SYNOPSIS
+    Reads a .txt file and extracts printer installation commands
+    
+    .DESCRIPTION
+    This function reads each line of a .txt file looking for printer installation
+    commands that start with /i or /id followed by a printer path
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [System.IO.FileInfo]$File,   # The .txt file to process
+        [Parameter(Mandatory)]
+        [string]$BasePath,           # Base directory path for relative path calculation
+        [Parameter(Mandatory)]
+        [ref]$AllResults,            # Reference to array collecting all results
+        [Parameter(Mandatory)]
+        [ref]$UniquePrinters,        # Reference to hashtable preventing duplicates
+        [Parameter(Mandatory)]
+        [string]$Indent              # Indentation string for display formatting
+    )
+    
+    try {
+        # Read all lines from the file
+        [string[]]$fileContent = Get-Content -Path $File.FullName -ErrorAction Stop
+        [int]$currentLineNumber = 0
+        
+        # Process each line in the file
+        foreach ([string]$currentLine in $fileContent) {
+            $currentLineNumber++
+            [string]$cleanedLine = $currentLine.Trim()
+            
+            # Skip empty lines and comment lines
+            if ([string]::IsNullOrWhiteSpace($cleanedLine) -or 
+                $cleanedLine.StartsWith("REM") -or 
+                $cleanedLine.StartsWith("===") -or 
+                $cleanedLine.StartsWith("NOTE:")) {
+                continue  # Skip to next line
+            }
+            
+            # Look for printer installation commands using regex pattern
+            # Pattern matches: /i or /id followed by space and \\server\printer path
+            if ($cleanedLine -match "^(/id?)\s+(\\\\[^\\]+\\[^\s]+)") {
+                # Process the found printer command
+                Process-PrinterCommand -Line $currentLine -TrimmedLine $cleanedLine -LineNumber $currentLineNumber -File $File -BasePath $BasePath -AllResults $AllResults -UniquePrinters $UniquePrinters -Indent $Indent -Matches $matches
+            }
+        }
+    }
+    catch {
+        Write-Host "$Indent     ERROR reading file: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+function Process-PrinterCommand {
+    <#
+    .SYNOPSIS
+    Processes a single printer installation command line
+    
+    .DESCRIPTION
+    Takes a line containing /i or /id command and extracts printer information,
+    checks for duplicates, and adds to results collection
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$Line,                    # Original line from file (with spacing)
+        [Parameter(Mandatory)]
+        [string]$TrimmedLine,             # Cleaned/trimmed version of the line
+        [Parameter(Mandatory)]
+        [int]$LineNumber,                 # Line number in the file
+        [Parameter(Mandatory)]
+        [System.IO.FileInfo]$File,        # File object containing this command
+        [Parameter(Mandatory)]
+        [string]$BasePath,                # Base path for relative path calculation
+        [Parameter(Mandatory)]
+        [ref]$AllResults,                 # Reference to array collecting all results
+        [Parameter(Mandatory)]
+        [ref]$UniquePrinters,             # Reference to hashtable preventing duplicates
+        [Parameter(Mandatory)]
+        [string]$Indent,                  # Display indentation string
+        [Parameter(Mandatory)]
+        [System.Text.RegularExpressions.GroupCollection]$Matches  # Regex match results
+    )
+    
+    # Extract command type (/i or /id) and printer path from regex matches
+    [string]$commandType = $Matches[1]      # Either "/i" or "/id"
+    [string]$printerPath = $Matches[2]      # Full UNC path like \\server\printer
+    
+    # Parse server and printer names from the UNC path
+    [string]$serverName = ""
+    [string]$printerName = ""
+    
+    # Use regex to split \\server\printer into parts
+    if ($printerPath -match "\\\\([^\\]+)\\(.+)") {
+        $serverName = $Matches[1]       # Server name (after \\)
+        $printerName = $Matches[2]      # Printer name (after server\)
+    }
+    
+    # Check if this printer path has already been found (prevent duplicates)
+    if (-not $UniquePrinters.Value.ContainsKey($printerPath)) {
+        # Create new printer result object
+        [PSCustomObject]$printerResult = [PSCustomObject]@{
+            File = $File.FullName
+            RelativePath = $File.FullName.Replace($BasePath, "")
+            LineNumber = $LineNumber
+            OriginalLine = $Line
+            CleanCommand = $TrimmedLine
+            PrinterPath = $printerPath
+            PrintServer = $serverName
+            PrinterName = $printerName
+            CommandType = if ($commandType -eq "/id") { "Install and Set Default" } else { "Install Only" }
+            IsCommented = $false
+        }
+        
+        # Add to both collections
+        $AllResults.Value += $printerResult
+        $UniquePrinters.Value[$printerPath] = $printerResult
+        
+        # Display the found printer information
+        Write-Host "$Indent     FOUND: Line $LineNumber" -ForegroundColor Green
+        Write-Host "$Indent       Printer Path: $printerPath" -ForegroundColor White
+        Write-Host "$Indent       Server: $serverName" -ForegroundColor White
+        Write-Host "$Indent       Printer: $printerName" -ForegroundColor White
+        Write-Host "$Indent       Type: $($printerResult.CommandType)" -ForegroundColor White
+        Write-Host "$Indent       Command: $TrimmedLine" -ForegroundColor Gray
+    }
+    else {
+        # Handle duplicate printer - update if this one sets as default
+        if ($commandType -eq "/id" -and $UniquePrinters.Value[$printerPath].CommandType -eq "Install Only") {
+            $UniquePrinters.Value[$printerPath].CommandType = "Install and Set Default"
+            Write-Host "$Indent     DUPLICATE (Updated to Default): $printerPath" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "$Indent     DUPLICATE (Skipped): $printerPath" -ForegroundColor DarkYellow
+        }
+    }
+}
+
+function Search-PrinterInstallCommands {
+    <#
+    .SYNOPSIS
+    Main function to search for printer installation commands
+    
+    .DESCRIPTION
+    Searches a specified directory and all subdirectories for .txt files containing
+    printer installation commands (/i or /id) and returns unique printer results
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$SearchPath              # Root directory to start searching from
+    )
+    
+    Write-Host "`nStarting comprehensive folder search..." -ForegroundColor Magenta
+    Write-Host "Base path: $SearchPath" -ForegroundColor Cyan
+    Write-Host "Looking for lines starting with '/i' or '/id' followed by printer paths..." -ForegroundColor Cyan
+    
+    # Verify the search path exists and is accessible
+    if (-not (Test-Path $SearchPath)) {
+        Write-Host "ERROR: Path does not exist or is not accessible: $SearchPath" -ForegroundColor Red
+        return @()  # Return empty array
+    }
+    
+    # Initialize collections to store results
+    [ref]$allFoundResults = [ref]@()        # All printer commands found (including duplicates)
+    [ref]$uniquePrinterList = [ref]@{}      # Hashtable to track unique printers by path
+    
+    # Start the recursive search through all folders
+    Search-PrinterFiles -CurrentPath $SearchPath -BasePath $SearchPath -AllResults $allFoundResults -UniquePrinters $uniquePrinterList
+    
+    # Convert hashtable values to sorted array for final results
+    [array]$finalResults = $uniquePrinterList.Value.Values | Sort-Object PrinterPath
+    
+    # Display summary of search results
+    Write-Host "`nSEARCH SUMMARY" -ForegroundColor Magenta
+    Write-Host "Total printer commands found: $($allFoundResults.Value.Count)" -ForegroundColor White
+    Write-Host "Unique printers found: $($finalResults.Count)" -ForegroundColor White
+    
+    # Display all unique printer commands found
+    if ($finalResults.Count -gt 0) {
+        Write-Host "`nUNIQUE PRINTER INSTALLATION COMMANDS:" -ForegroundColor Yellow
+        
+        foreach ([PSCustomObject]$printerItem in $finalResults) {
+            # Determine the correct command prefix
+            [string]$commandPrefix = if ($printerItem.CommandType -eq "Install and Set Default") { "/id" } else { "/i" }
+            Write-Host "  $commandPrefix $($printerItem.PrinterPath)" -ForegroundColor Green
+        }
+    }
+    else {
+        Write-Host "`nNo printer installation commands found." -ForegroundColor Yellow
+        Write-Host "Searched for lines starting with '/i' or '/id' followed by UNC printer paths." -ForegroundColor Yellow
+    }
+    
+    return $finalResults
+}
+
+function Start-PrinterMigration {
+    param(
+        [Parameter(Mandatory)]
+        [array]$SearchResults
+    )
+    
+    Write-Host "`n" + "=" * 80
+    Write-Host "PRINTER MIGRATION TO SECOND PC" -ForegroundColor Magenta
+    
+    $secondPCName = Read-Host -Prompt "`nEnter the second PC name to copy printers to (or press Enter to skip migration)"
+    
+    if ([string]::IsNullOrWhiteSpace($secondPCName)) {
+        Write-Host "Skipping migration..." -ForegroundColor Yellow
+        return
+    }
+    
+    Write-Host "`nTesting connectivity to second PC: $secondPCName" -ForegroundColor Cyan
+    
+    if (-not (Test-ComputerConnectivity -ComputerName $secondPCName)) {
+        return
+    }
+    
+    $secondPCPath = "\\$secondPCName\c$\ProgramData\Renown\Printers\"
+    
+    Write-Host "Testing path access: $secondPCPath" -ForegroundColor Cyan
+    if (-not (Test-Path $secondPCPath)) {
+        Write-Host "ERROR: Cannot access path on second PC: $secondPCPath" -ForegroundColor Red
+        return
+    }
+    
+    Write-Host "Path accessible: $secondPCPath" -ForegroundColor Green
+    
+    # Clean up directory
+    Write-Host "`nCleaning up second PC printers directory..." -ForegroundColor Yellow
+    try {
+        $itemsToDelete = Get-ChildItem -Path $secondPCPath -ErrorAction Stop | Where-Object { $_.Name -ne "Install_Renown_Printers.ps1" }
+        
+        foreach ($item in $itemsToDelete) {
+            Write-Host "  Deleting: $($item.Name)" -ForegroundColor Gray
+            Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        
+        Write-Host "Cleanup completed successfully." -ForegroundColor Green
+    }
+    catch {
+        Write-Host "ERROR during cleanup: $($_.Exception.Message)" -ForegroundColor Red
+        return
+    }
+    
+    # Create printer configuration file
+    Create-PrinterConfigFile -SearchResults $SearchResults -DestinationPath $secondPCPath
+}
+
+function Get-PrinterFileHeader {
+    return @"
 Printer queue repository file.
-Enter each printer on a seperate line line.
+Enter each printer on a separate line.
 
 Line Format:                      -Leading and trailing spaces ok, no quotes
 \\PrintServer\PrinterName         -Skip
@@ -276,56 +466,78 @@ NOTE: DO NOT use the # in the format: used here so the examples do not install.
 ===========================================================================================
 Papercut Printer
 "@
-                        
-                        # Add each unique printer found
-                        foreach ($result in $searchResults) {
-                            if ($result.CommandType -eq "Install and Set Default") {
-                                $fileContent += "`n/id $($result.PrinterPath)"
-                            } else {
-                                $fileContent += "`n/i $($result.PrinterPath)"
-                            }
-                        }
-                        
-                        $fileContent += "`n==========================================================================================="
-                        
-                        # Write the file to the second PC
-                        $newFilePath = Join-Path $secondPCPath "_SPPrinters.txt"
-                        
-                        try {
-                            $fileContent | Out-File -FilePath $newFilePath -Encoding UTF8 -ErrorAction Stop
-                            Write-Host "Successfully created: $newFilePath" -ForegroundColor Green
-                            
-                            # Display what was written
-                            Write-Host "`nPrinter commands added to _SPPrinters.txt:" -ForegroundColor Yellow
-                            foreach ($result in $searchResults) {
-                                $command = if ($result.CommandType -eq "Install and Set Default") { "/id" } else { "/i" }
-                                Write-Host "  $command $($result.PrinterPath)" -ForegroundColor White
-                            }
-                            
-                            Write-Host "`nMigration completed successfully!" -ForegroundColor Green
-                            Write-Host "Total unique printers migrated: $($searchResults.Count)" -ForegroundColor White
-                            
-                        } catch {
-                            Write-Host "ERROR creating file: $($_.Exception.Message)" -ForegroundColor Red
-                        }
-                        
-                    } catch {
-                        Write-Host "ERROR during cleanup: $($_.Exception.Message)" -ForegroundColor Red
-                    }
-                } else {
-                    Write-Host "ERROR: Cannot access path on second PC: $secondPCPath" -ForegroundColor Red
-                }
-                
-            } else {
-                Write-Host "Second PC Status: OFFLINE or UNREACHABLE" -ForegroundColor Red
-            }
-        } else {
-            Write-Host "Skipping migration..." -ForegroundColor Yellow
+}
+
+function Create-PrinterConfigFile {
+    param(
+        [Parameter(Mandatory)]
+        [array]$SearchResults,
+        [Parameter(Mandatory)]
+        [string]$DestinationPath
+    )
+    
+    Write-Host "`nCreating _SPPrinters.txt file..." -ForegroundColor Cyan
+    
+    $fileContent = Get-PrinterFileHeader
+    
+    foreach ($result in $SearchResults) {
+        $command = if ($result.CommandType -eq "Install and Set Default") { "/id" } else { "/i" }
+        $fileContent += "`n$command $($result.PrinterPath)"
+    }
+    
+    $fileContent += "`n==========================================================================================="
+    
+    $newFilePath = Join-Path $DestinationPath "_SPPrinters.txt"
+    
+    try {
+        $fileContent | Out-File -FilePath $newFilePath -Encoding UTF8 -ErrorAction Stop
+        Write-Host "Successfully created: $newFilePath" -ForegroundColor Green
+        
+        Write-Host "`nPrinter commands added to _SPPrinters.txt:" -ForegroundColor Yellow
+        foreach ($result in $SearchResults) {
+            $command = if ($result.CommandType -eq "Install and Set Default") { "/id" } else { "/i" }
+            Write-Host "  $command $($result.PrinterPath)" -ForegroundColor White
         }
+        
+        Write-Host "`nMigration completed successfully!" -ForegroundColor Green
+        Write-Host "Total unique printers migrated: $($SearchResults.Count)" -ForegroundColor White
+    }
+    catch {
+        Write-Host "ERROR creating file: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+#endregion Functions
+
+#region Main Script
+
+Write-Host "Printer Migration Script v1.2" -ForegroundColor Magenta
+Write-Host "===============================" -ForegroundColor Magenta
+
+do {
+    $computerName = Read-Host -Prompt "Enter the computer name (press Enter to exit)"
+    
+    if ([string]::IsNullOrWhiteSpace($computerName)) {
+        Write-Host "Exiting script..." -ForegroundColor Yellow
+        break
+    }
+    
+    if (-not (Test-ComputerConnectivity -ComputerName $computerName)) {
+        Write-Host "`nSkipping to next computer...`n" -ForegroundColor Yellow
+        continue
+    }
+    
+    $searchPath = "\\$computerName\c$\programdata\renown\printers\"
+    $searchResults = Search-PrinterInstallCommands -SearchPath $searchPath
+    
+    if ($searchResults.Count -gt 0) {
+        Start-PrinterMigration -SearchResults $searchResults
     }
     
     Write-Host "Processing complete for $computerName" -ForegroundColor Green
-
+    
 } while ($true)
 
 Write-Host "Script execution completed." -ForegroundColor Magenta
+
+#endregion Main Script
