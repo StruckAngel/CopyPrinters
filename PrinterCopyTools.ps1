@@ -34,14 +34,14 @@ function Test-ComputerConnectivity {
     
     # Step 1: Basic connectivity test using Test-Connection
     try {
-        [Microsoft.PowerShell.Commands.TestConnectionCommand+PingStatus[]]$pingResults = Test-Connection -ComputerName $ComputerName -Count 4 -ErrorAction Stop
+        $pingResults = Test-Connection -ComputerName $ComputerName -Count 4 -ErrorAction Stop
         
         Write-Host "Status: ONLINE" -ForegroundColor Green
         Write-Host "Packets Sent: 4" -ForegroundColor White
         Write-Host "Packets Received: $($pingResults.Count)" -ForegroundColor White
         
         # Calculate average response time
-        [double]$avgResponseTime = ($pingResults | Measure-Object -Property ResponseTime -Average).Average
+        $avgResponseTime = ($pingResults | Measure-Object -Property ResponseTime -Average).Average
         Write-Host "Average Response Time: $([math]::Round($avgResponseTime, 2)) ms" -ForegroundColor White
         
         # Step 2: Perform traceroute validation
@@ -78,15 +78,15 @@ function Test-TracerouteDestination {
         Write-Host "Running traceroute to $ComputerName..." -ForegroundColor Gray
         
         # Execute tracert command and capture output
-        [string]$tracertOutput = & tracert -h 10 -w 2000 $ComputerName 2>&1 | Out-String
+        $tracertOutput = & tracert -h 10 -w 2000 $ComputerName 2>&1 | Out-String
         
         # Parse traceroute output to find final destination
-        [string[]]$tracertLines = $tracertOutput -split "`n" | Where-Object { $_.Trim() -ne "" }
-        [string]$finalDestination = ""
-        [bool]$routeFound = $false
+        $tracertLines = $tracertOutput -split "`n" | Where-Object { $_.Trim() -ne "" }
+        $finalDestination = ""
+        $routeFound = $false
         
         # Look through tracert output for the final successful hop
-        foreach ([string]$currentLine in $tracertLines) {
+        foreach ($currentLine in $tracertLines) {
             # Skip header lines and error messages
             if ($currentLine -match "^\s*\d+" -and $currentLine -notmatch "\*\s*\*\s*\*") {
                 # Extract the destination from lines with successful hops
@@ -155,16 +155,16 @@ function Search-PrinterFiles {
     )
     
     # Create indentation for nested folder display
-    [string]$indent = "  " * $Depth
+    $indent = "  " * $Depth
     
     try {
         Write-Host "$indent Searching: $CurrentPath" -ForegroundColor Gray
         
         # Get all items (files and folders) in current directory
-        [System.IO.FileSystemInfo[]]$allItems = Get-ChildItem -Path $CurrentPath -ErrorAction SilentlyContinue
+        $allItems = Get-ChildItem -Path $CurrentPath -ErrorAction SilentlyContinue
         
         # Filter to only .txt files (not directories)
-        [System.IO.FileInfo[]]$textFiles = $allItems | Where-Object { 
+        $textFiles = $allItems | Where-Object { 
             $_.Extension -eq ".txt" -and -not $_.PSIsContainer 
         }
         
@@ -173,7 +173,7 @@ function Search-PrinterFiles {
             Write-Host "$indent   Found $($textFiles.Count) .txt files" -ForegroundColor Green
             
             # Process each .txt file for printer commands
-            foreach ([System.IO.FileInfo]$currentFile in $textFiles) {
+            foreach ($currentFile in $textFiles) {
                 Write-Host "$indent   Processing: $($currentFile.Name)" -ForegroundColor Yellow
                 Process-PrinterFile -File $currentFile -BasePath $BasePath -AllResults $AllResults -UniquePrinters $UniquePrinters -Indent $indent
             }
@@ -183,14 +183,14 @@ function Search-PrinterFiles {
         }
         
         # Get all subdirectories for recursive search
-        [System.IO.DirectoryInfo[]]$subDirectories = $allItems | Where-Object { $_.PSIsContainer }
+        $subDirectories = $allItems | Where-Object { $_.PSIsContainer }
         
         # Recursively search subdirectories
         if ($subDirectories.Count -gt 0) {
             Write-Host "$indent   Found $($subDirectories.Count) subdirectories" -ForegroundColor Cyan
             
             # Search each subdirectory
-            foreach ([System.IO.DirectoryInfo]$currentSubDir in $subDirectories) {
+            foreach ($currentSubDir in $subDirectories) {
                 Write-Host "$indent   Entering directory: $($currentSubDir.Name)" -ForegroundColor Cyan
                 # Recursive call with increased depth
                 Search-PrinterFiles -CurrentPath $currentSubDir.FullName -BasePath $BasePath -AllResults $AllResults -UniquePrinters $UniquePrinters -Depth ($Depth + 1)
@@ -229,13 +229,13 @@ function Process-PrinterFile {
     
     try {
         # Read all lines from the file
-        [string[]]$fileContent = Get-Content -Path $File.FullName -ErrorAction Stop
-        [int]$currentLineNumber = 0
+        $fileContent = Get-Content -Path $File.FullName -ErrorAction Stop
+        $currentLineNumber = 0
         
         # Process each line in the file
-        foreach ([string]$currentLine in $fileContent) {
+        foreach ($currentLine in $fileContent) {
             $currentLineNumber++
-            [string]$cleanedLine = $currentLine.Trim()
+            $cleanedLine = $currentLine.Trim()
             
             # Skip empty lines and comment lines
             if ([string]::IsNullOrWhiteSpace($cleanedLine) -or 
@@ -289,12 +289,12 @@ function Process-PrinterCommand {
     )
     
     # Extract command type (/i or /id) and printer path from regex matches
-    [string]$commandType = $Matches[1]      # Either "/i" or "/id"
-    [string]$printerPath = $Matches[2]      # Full UNC path like \\server\printer
+    $commandType = $Matches[1]      # Either "/i" or "/id"
+    $printerPath = $Matches[2]      # Full UNC path like \\server\printer
     
     # Parse server and printer names from the UNC path
-    [string]$serverName = ""
-    [string]$printerName = ""
+    $serverName = ""
+    $printerName = ""
     
     # Use regex to split \\server\printer into parts
     if ($printerPath -match "\\\\([^\\]+)\\(.+)") {
@@ -305,7 +305,7 @@ function Process-PrinterCommand {
     # Check if this printer path has already been found (prevent duplicates)
     if (-not $UniquePrinters.Value.ContainsKey($printerPath)) {
         # Create new printer result object
-        [PSCustomObject]$printerResult = [PSCustomObject]@{
+        $printerResult = [PSCustomObject]@{
             File = $File.FullName
             RelativePath = $File.FullName.Replace($BasePath, "")
             LineNumber = $LineNumber
@@ -367,14 +367,14 @@ function Search-PrinterInstallCommands {
     }
     
     # Initialize collections to store results
-    [ref]$allFoundResults = [ref]@()        # All printer commands found (including duplicates)
-    [ref]$uniquePrinterList = [ref]@{}      # Hashtable to track unique printers by path
+    $allFoundResults = [ref]@()        # All printer commands found (including duplicates)
+    $uniquePrinterList = [ref]@{}      # Hashtable to track unique printers by path
     
     # Start the recursive search through all folders
     Search-PrinterFiles -CurrentPath $SearchPath -BasePath $SearchPath -AllResults $allFoundResults -UniquePrinters $uniquePrinterList
     
     # Convert hashtable values to sorted array for final results
-    [array]$finalResults = $uniquePrinterList.Value.Values | Sort-Object PrinterPath
+    $finalResults = $uniquePrinterList.Value.Values | Sort-Object PrinterPath
     
     # Display summary of search results
     Write-Host "`nSEARCH SUMMARY" -ForegroundColor Magenta
@@ -385,9 +385,9 @@ function Search-PrinterInstallCommands {
     if ($finalResults.Count -gt 0) {
         Write-Host "`nUNIQUE PRINTER INSTALLATION COMMANDS:" -ForegroundColor Yellow
         
-        foreach ([PSCustomObject]$printerItem in $finalResults) {
+        foreach ($printerItem in $finalResults) {
             # Determine the correct command prefix
-            [string]$commandPrefix = if ($printerItem.CommandType -eq "Install and Set Default") { "/id" } else { "/i" }
+            $commandPrefix = if ($printerItem.CommandType -eq "Install and Set Default") { "/id" } else { "/i" }
             Write-Host "  $commandPrefix $($printerItem.PrinterPath)" -ForegroundColor Green
         }
     }
